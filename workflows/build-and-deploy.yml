@@ -1,0 +1,68 @@
+name: Build and Deploy
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        required: true
+        type: string
+      isCloudHub:
+        required: false
+        type: boolean
+        default: false
+jobs:
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    env:
+      ANYPOINT_USERNAME: ${{ secrets.ANYPOINT_USERNAME }}
+      ANYPOINT_PASSWORD: ${{ secrets.ANYPOINT_PASSWORD }}
+      ORG_ID: bdfc85cf-c13f-4a14-a1cf-11c22d270396
+      decoding_key: ${{ secrets.DECODE_KEY }}
+      NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+      NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+      ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+      ARTIFACTORY_TOKEN: ${{ secrets.ARTIFACTORY_TOKEN }}
+      JFROG_URL: "https://artifacts.saint-gobain.com/"
+      SONAR_PROJECT_VERSION: ${{ github.sha }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      MAVEN_OPTS: "-Xmx4096m -Xms128m -XX:+HeapDumpOnOutOfMemoryError"
+      ANYPOINT_PLATFORM_CLIENT_ID: ${{ secrets.ANYPOINT_PLATFORM_CLIENT_ID }}
+      ANYPOINT_PLATFORM_CLIENT_SECRET: ${{ secrets.ANYPOINT_PLATFORM_CLIENT_SECRET }}
+      DD_API_KEY: ${{ secrets.DD_API_KEY }}
+    
+    steps:      
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: 21
+          cache: 'maven'
+
+      - name: Envirnoment Setup
+        uses: 075-O2/sg-mule-build-pipeline-workflows/.github/actions/setup-environment@main
+        with:
+          branch: ${{ inputs.branch }}
+
+      - name: Maven Test
+        uses: 075-O2/sg-mule-build-pipeline-workflows/.github/actions/maven-test@main
+       
+      - name: SonarQube scan via Maven (force XML/YAML/JSON)
+        uses: 075-O2/sg-mule-build-pipeline-workflows/.github/actions/sonarqube@main
+        with:
+          branch: $ {{ inputs.branch }}
+
+      - name: Maven Package
+        uses: 075-O2/sg-mule-build-pipeline-workflows/.github/actions/maven-package@main
+        with:
+          branch: ${{ inputs.branch }}
+
+      - name: Deploy to Anypoint Platform
+        uses: 075-O2/sg-mule-build-pipeline-workflows/.github/actions/deploy@main
+        with:
+          isCloudHub: ${{ inputs.isCloudHub }}
+          branch: ${{ inputs.branch }}

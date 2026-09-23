@@ -1,0 +1,168 @@
+name: Develop - Build and Deploy to Anypoint Platform
+inputs:
+  isCloudHub:
+    required: true
+    type: boolean
+  branch:
+    required: true
+    type: string
+ 
+runs:
+  using: composite
+  steps:
+    - name: Obtain Anypoint Access Token
+      shell: bash
+      run: |
+        ACCESS_TOKEN=$(curl --location 'https://eu1.anypoint.mulesoft.com/accounts/api/v2/oauth2/token' \
+          --header 'Content-Type: application/x-www-form-urlencoded' \
+          --data-urlencode "client_id=${{ env.ANYPOINT_USERNAME }}" \
+          --data-urlencode "client_secret=${{ env.ANYPOINT_PASSWORD }}" \
+          --data-urlencode 'grant_type=client_credentials' | jq -r '.access_token')
+          
+        if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" = "null" ]; then
+             echo "Error: Failed to obtain Anypoint access token"
+             exit 1
+        fi
+        echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> $GITHUB_ENV
+
+    - name: Deploy Application to Anypoint Platform
+      shell: bash
+      run: |  
+        if [ -d "target" ]; then
+            latest_jar=$(ls -t target/*.jar | head -n 1)
+        else
+            echo "Error: target/ directory not found"
+            ls -la
+            exit 1
+        fi
+        
+        if [ -z "$latest_jar" ] || [ ! -f "$latest_jar" ]; then
+          echo "Error: No JAR file found in target/ directory"
+          echo "Available files in target/:"
+          ls -la target/ || echo "target/ directory does not exist"
+          exit 1
+        fi
+        
+        echo "Latest JAR path using for deployment: $latest_jar"
+
+        if [ ${{ inputs.isCloudHub }} ==  true ]; then
+            APP_NAME=${{ env.API_NAME }}-${{ inputs.branch == 'test' && 'test' || env.MULE_ENV }}
+            echo "Deploying API to cloudHub. API Name: $APP_NAME"
+            
+            RESPONSE=$(curl --location --request GET "https://eu1.anypoint.mulesoft.com/cloudhub/api/applications/domains/$APP_NAME" \
+              --header "Authorization: Bearer $ACCESS_TOKEN" \
+              --header "X-ANYPNT-ORG-ID: ${{ env.ORG_ID }}" \
+              --header "X-ANYPNT-ENV-ID: ${{ env.ENV_ID }}" | jq -r '.available')
+            
+            if [ "$RESPONSE" == true ]; then
+              echo "Deploying new application to ${{ env.MULE_ENV }}..."
+
+              curl --location --request POST "https://eu1.anypoint.mulesoft.com/cloudhub/api/v2/applications" \
+                --header "Authorization: Bearer $ACCESS_TOKEN" \
+                --header "X-ANYPNT-ORG-ID: ${{ env.ORG_ID }}" \
+                --header "X-ANYPNT-ENV-ID: ${{ env.ENV_ID }}" \
+                --header 'Content-Type: multipart/form-data' \
+                --form "appInfoJson={
+                  \"domain\": \"$APP_NAME\",
+                  \"region\": \"eu-central-1\",
+                  \"muleVersion\": {\"version\": \"4.9-java17\"},
+                  \"workers\": {
+                    \"amount\": \"1\",
+                    \"type\": {
+                      \"name\": \"Micro\",
+                      \"weight\": \"0.1\",
+                      \"cpu\": \"0.1 vCore\",
+                      \"memory\": \"500 MB memory\"
+                    }
+                  },
+                  \"loggingCustomLog4JEnabled\": \"true\",
+                  \"properties\": {
+                    \"mule.env\": \"${{ env.MULE_ENV }}\",
+                    \"config.decoding.key\": \"${{ env.decoding_key }}\",
+                    \"anypoint.platform.config.analytics.agent.enabled\": \"true\",
+                    \"anypoint.platform.client_id\": \"${{ env.ANYPOINT_PLATFORM_CLIENT_ID }}\",
+                    \"anypoint.platform.client_secret\": \"${{ env.ANYPOINT_PLATFORM_CLIENT_SECRET }}\",
+                    \"datadog.key\": \"${{ env.DD_API_KEY }}\"
+                  }
+                }" \
+                --form artifactName=$APP_NAME \
+                --form autoStart=true \
+                --form "file=@$latest_jar"
+              
+            elif [ "$RESPONSE" == false ]; then
+              echo "Redeploying existing application to ${{ env.MULE_ENV }}..." 
+
+              curl --location --request PUT "https://eu1.anypoint.mulesoft.com/cloudhub/api/v2/applications/$APP_NAME" \
+                --header "Authorization: Bearer $ACCESS_TOKEN" \
+                --header "X-ANYPNT-ORG-ID: ${{ env.ORG_ID }}" \
+                --header "X-ANYPNT-ENV-ID: ${{ env.ENV_ID }}" \
+                --header 'Content-Type: multipart/form-data' \
+                --form "appInfoJson={
+                  \"domain\": \"$APP_NAME\",
+                  \"region\": \"eu-central-1\",
+                  \"muleVersion\": {\"version\": \"4.9-java17\"},
+                  \"workers\": {
+                    \"amount\": \"1\",
+                    \"type\": {
+                      \"name\": \"Micro\",
+                      \"weight\": \"0.1\",
+                      \"cpu\": \"0.1 vCore\",
+                      \"memory\": \"500 MB memory\"
+                    }
+                  },
+                  \"loggingCustomLog4JEnabled\": \"true\",
+                  \"properties\": {
+                    \"mule.env\": \"${{ env.MULE_ENV }}\",
+                    \"config.decoding.key\": \"${{ env.decoding_key }}\",
+                    \"anypoint.platform.config.analytics.agent.enabled\": \"true\",
+                    \"anypoint.platform.client_id\": \"${{ env.ANYPOINT_PLATFORM_CLIENT_ID }}\",
+                    \"anypoint.platform.client_secret\": \"${{ env.ANYPOINT_PLATFORM_CLIENT_SECRET }}\",
+                    \"datadog.key\": \"${{ env.DD_API_KEY }}\"
+                  }
+                }" \
+                --form "file=@$latest_jar"
+                
+            else
+              echo "Unexpected API Response"
+              exit 1
+            fi
+          
+        else
+            APP_NAME="${{ env.API_NAME }}"
+            echo "Deploying API to On-Prem. API Name: $APP_NAME"  
+            APPLICATION_ID=$(curl --location --request GET "https://eu1.anypoint.mulesoft.com/hybrid/api/v1/applications?targetId=${{ env.TARGET_ID }}" \
+              --header "Authorization: Bearer $ACCESS_TOKEN" \
+              --header "X-ANYPNT-ORG-ID: ${{ env.ORG_ID }}" \
+              --header "X-ANYPNT-ENV-ID: ${{ env.ENV_ID }}" | jq -r --arg APP_NAME "${{ env.API_NAME }}" '.data[] | select(.name == $APP_NAME) | .id')
+
+            echo "Application ID: $APPLICATION_ID"
+            
+            if [ -n "$APPLICATION_ID" ]; then
+              echo "Redeploying existing application to ${{ env.MULE_ENV }}..."
+
+              curl --location --request PATCH "https://eu1.anypoint.mulesoft.com/hybrid/api/v1/applications/$APPLICATION_ID" \
+                --header "Authorization: Bearer $ACCESS_TOKEN" \
+                --header "X-ANYPNT-ORG-ID: ${{ env.ORG_ID }}" \
+                --header "X-ANYPNT-ENV-ID: ${{ env.ENV_ID }}" \
+                --header 'Content-Type: multipart/form-data' \
+                --form 'configuration={"mule.agent.application.properties.service": {"applicationName":"'${{ env.API_NAME }}'", "properties": {"mule.env": "'${{ env.MULE_ENV }}'", "config.decoding.key": "'${{ env.decoding_key }}'"}}}' \
+                --form artifactName=${{ env.API_NAME }} \
+                --form targetType=Hybrid \
+                --form targetId=${{ env.TARGET_ID }} \
+                --form "file=@$latest_jar"
+
+            else
+              echo "Deploying new application to ${{ env.MULE_ENV }}..."
+
+              curl --location --request POST 'https://eu1.anypoint.mulesoft.com/hybrid/api/v1/applications' \
+                --header "Authorization: Bearer $ACCESS_TOKEN" \
+                --header "X-ANYPNT-ORG-ID: ${{ env.ORG_ID }}" \
+                --header "X-ANYPNT-ENV-ID: ${{ env.ENV_ID }}" \
+                --header 'Content-Type: multipart/form-data' \
+                --form 'configuration={"mule.agent.application.properties.service": {"applicationName":"'${{ env.API_NAME }}'", "properties": {"mule.env": "'${{ env.MULE_ENV }}'", "config.decoding.key": "'${{ env.decoding_key }}'"}}}' \
+                --form artifactName=${{ env.API_NAME }} \
+                --form targetType=Hybrid \
+                --form targetId=${{ env.TARGET_ID }} \
+                --form "file=@$latest_jar"
+            fi
+        fi
