@@ -1,0 +1,25 @@
+name: Deploy Application
+
+on:
+  push:
+    branches:
+      - dev
+      - qa
+      - preprod
+      - test
+      - main
+      
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  call-build-and-deploy:
+    name: CICD Workflow
+    uses: 075-O2/sg-mule-build-pipeline-workflows/.github/workflows/build-and-deploy.yml@main
+    with:
+      branch: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || github.ref_name }}
+      isCloudHub: false
+    secrets: inherit
